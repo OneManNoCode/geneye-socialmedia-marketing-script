@@ -1,0 +1,12 @@
+{
+  "name": "geneye-socialmedia-marketing-script",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.cjs",
+  "scripts": {
+    "start": "node index.cjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
