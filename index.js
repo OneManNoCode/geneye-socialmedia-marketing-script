@@ -1,4 +1,4 @@
-import express from 'express';
+const express = require('express');
 
 const app = express();
 app.use(express.json());
@@ -16,7 +16,6 @@ app.post('/capture', async (req, res) => {
     return res.status(400).json({ error: 'Missing question' });
   }
 
-  // Stub response (temporary)
   return res.json({
     success: true,
     video_url: null,
