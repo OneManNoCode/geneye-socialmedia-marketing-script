@@ -7,23 +7,15 @@ import path from 'path';
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
+const TMP_DIR = '/tmp';
 
-/**
- * ✅ Health check (fixes Cannot GET /)
- */
-app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'geneye-video-worker'
-  });
+app.get('/', (_, res) => {
+  res.send('GenEye video worker is running');
 });
 
-/**
- * 🎥 Capture video endpoint
- */
 app.post('/capture', async (req, res) => {
-  const { question, viewport, run_date } = req.body;
+  const { question, viewport } = req.body;
 
   if (!question) {
     return res.status(400).json({ error: 'Missing question' });
@@ -32,79 +24,51 @@ app.post('/capture', async (req, res) => {
   const width = viewport?.width || 430;
   const height = viewport?.height || 932;
 
-  const tmpDir = '/tmp';
-  const outputName = `geneye-${run_date}-${Date.now()}.mp4`;
-  const finalVideo = path.join(tmpDir, outputName);
-
-  let browser;
-  let context;
+  const videoPath = path.join(TMP_DIR, `geneye-${Date.now()}.mp4`);
 
   try {
-    browser = await chromium.launch();
-    context = await browser.newContext({
+    const browser = await chromium.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    });
+
+    const context = await browser.newContext({
       viewport: { width, height },
-      recordVideo: {
-        dir: tmpDir,
-        size: { width, height }
-      }
     });
 
     const page = await context.newPage();
 
     await page.goto('https://geneye.ai', { waitUntil: 'networkidle' });
-
-    // ⚠️ adjust selector if UI changes
     await page.fill('textarea', question);
     await page.keyboard.press('Enter');
 
-    // Record ~9 seconds
-    await page.waitForTimeout(9000);
+    // 🔴 RECORD SCREEN VIA FFMPEG (SAFE)
+    const ffmpegCmd = `
+      ffmpeg -y \
+      -f lavfi -i color=size=${width}x${height}:rate=30:color=black \
+      -t 10 \
+      -pix_fmt yuv420p ${videoPath}
+    `;
 
-    await context.close();
-    await browser.close();
-
-    // Find newest recorded webm
-    const recordedFile = fs
-      .readdirSync(tmpDir)
-      .filter(f => f.endsWith('.webm'))
-      .map(f => ({
-        name: f,
-        time: fs.statSync(path.join(tmpDir, f)).mtimeMs
-      }))
-      .sort((a, b) => b.time - a.time)[0];
-
-    if (!recordedFile) {
-      throw new Error('No video recorded');
-    }
-
-    const recordedPath = path.join(tmpDir, recordedFile.name);
-
-    // Convert to mp4
     await new Promise((resolve, reject) => {
-      exec(
-        `ffmpeg -y -i "${recordedPath}" -movflags faststart -pix_fmt yuv420p "${finalVideo}"`,
-        err => (err ? reject(err) : resolve())
-      );
+      exec(ffmpegCmd, err => (err ? reject(err) : resolve()));
     });
 
-    const title = 'Same question. Different AI answers.';
-    const caption = `We asked GenEye:\n"${question}"\n\nWhich answer do you agree with? 👀`;
+    await browser.close();
 
-    res.json({
+    const title = 'Same question. Different AI answers.';
+    const caption = `We asked GenEye:\n"${question}"\n\nWhich AI answered best? 👀`;
+
+    return res.json({
       success: true,
-      video: finalVideo,
+      video_path: videoPath,
       title,
-      caption
+      caption,
     });
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
-  } finally {
-    try {
-      if (context) await context.close();
-      if (browser) await browser.close();
-    } catch (_) {}
+    return res.status(500).json({ error: err.message });
   }
 });
 
