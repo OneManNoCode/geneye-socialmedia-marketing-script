@@ -2,10 +2,26 @@ import express from 'express';
 import { chromium } from 'playwright';
 import { exec } from 'child_process';
 import fs from 'fs';
+import path from 'path';
 
 const app = express();
 app.use(express.json());
 
+const PORT = process.env.PORT || 3000;
+
+/**
+ * ✅ Health check (fixes Cannot GET /)
+ */
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'geneye-video-worker'
+  });
+});
+
+/**
+ * 🎥 Capture video endpoint
+ */
 app.post('/capture', async (req, res) => {
   const { question, viewport, run_date } = req.body;
 
@@ -17,23 +33,27 @@ app.post('/capture', async (req, res) => {
   const height = viewport?.height || 932;
 
   const tmpDir = '/tmp';
-  const finalVideo = `${tmpDir}/geneye-${run_date}.mp4`;
+  const outputName = `geneye-${run_date}-${Date.now()}.mp4`;
+  const finalVideo = path.join(tmpDir, outputName);
 
-  const browser = await chromium.launch();
-  const context = await browser.newContext({
-    viewport: { width, height },
-    recordVideo: {
-      dir: tmpDir,
-      size: { width, height }
-    }
-  });
-
-  const page = await context.newPage();
+  let browser;
+  let context;
 
   try {
+    browser = await chromium.launch();
+    context = await browser.newContext({
+      viewport: { width, height },
+      recordVideo: {
+        dir: tmpDir,
+        size: { width, height }
+      }
+    });
+
+    const page = await context.newPage();
+
     await page.goto('https://geneye.ai', { waitUntil: 'networkidle' });
 
-    // Adjust selector later if needed
+    // ⚠️ adjust selector if UI changes
     await page.fill('textarea', question);
     await page.keyboard.press('Enter');
 
@@ -43,12 +63,26 @@ app.post('/capture', async (req, res) => {
     await context.close();
     await browser.close();
 
-    const files = fs.readdirSync(tmpDir).filter(f => f.endsWith('.webm'));
-    const recorded = `${tmpDir}/${files[0]}`;
+    // Find newest recorded webm
+    const recordedFile = fs
+      .readdirSync(tmpDir)
+      .filter(f => f.endsWith('.webm'))
+      .map(f => ({
+        name: f,
+        time: fs.statSync(path.join(tmpDir, f)).mtimeMs
+      }))
+      .sort((a, b) => b.time - a.time)[0];
 
+    if (!recordedFile) {
+      throw new Error('No video recorded');
+    }
+
+    const recordedPath = path.join(tmpDir, recordedFile.name);
+
+    // Convert to mp4
     await new Promise((resolve, reject) => {
       exec(
-        `ffmpeg -y -i ${recorded} -movflags faststart -pix_fmt yuv420p ${finalVideo}`,
+        `ffmpeg -y -i "${recordedPath}" -movflags faststart -pix_fmt yuv420p "${finalVideo}"`,
         err => (err ? reject(err) : resolve())
       );
     });
@@ -64,10 +98,16 @@ app.post('/capture', async (req, res) => {
     });
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
+  } finally {
+    try {
+      if (context) await context.close();
+      if (browser) await browser.close();
+    } catch (_) {}
   }
 });
 
-app.listen(3000, () => {
-  console.log('GenEye video worker running on port 3000');
+app.listen(PORT, () => {
+  console.log(`GenEye video worker running on port ${PORT}`);
 });
